@@ -15,6 +15,12 @@ from datetime import datetime
 from pathlib import Path
 from PIL import Image
 
+# 禁用解压炸弹保护，允许处理超大尺寸图片
+Image.MAX_IMAGE_PIXELS = None
+
+# PNG / libpng 单边最大安全尺寸（超过此值会导致 "broken data stream" 错误）
+MAX_DIMENSION = 65000
+
 # ============================================================
 #  支持的图片格式
 # ============================================================
@@ -86,8 +92,24 @@ def merge_images(folder_path: str, output_name: str = "merged_output.png") -> st
         images.append(img)
         print(f"  [{i}/{len(image_files)}] {fp.name}  ({img.width}×{img.height})")
 
-    # 3. 计算最大宽度
+    # 3. 预估总高度，检查是否超限
+    estimated_height = sum(img.height for img in images)
     max_width = max(img.width for img in images)
+
+    if max_width > MAX_DIMENSION or estimated_height > MAX_DIMENSION:
+        # 计算缩放因子，使最长边刚好适配上限
+        scale_factor = min(MAX_DIMENSION / max_width, MAX_DIMENSION / estimated_height)
+        print(f"\n⚠ 图片尺寸超限 ({max_width}×{estimated_height})，自动缩放至 {scale_factor:.1%} ...")
+        # 按比例缩放所有原始图片
+        for i in range(len(images)):
+            img = images[i]
+            new_w = max(1, int(img.width * scale_factor))
+            new_h = max(1, int(img.height * scale_factor))
+            images[i] = img.resize((new_w, new_h), Image.LANCZOS)
+        # 重新计算最大宽度
+        max_width = max(img.width for img in images)
+        new_estimated = sum(img.height for img in images)
+        print(f"   缩放后尺寸: {max_width}×{new_estimated}")
 
     # 4. 将每张图片居中放置到 max_width 宽的透明画布上
     padded_images: list[Image.Image] = []
@@ -118,9 +140,30 @@ def merge_images(folder_path: str, output_name: str = "merged_output.png") -> st
         print(f"  [{bar}] {pct}%", end="\r")
     print()  # 换行
 
-    # 6. 保存
+    # 6. 保存（最终安全检查）
+    if merged.width > MAX_DIMENSION or merged.height > MAX_DIMENSION:
+        final_scale = min(MAX_DIMENSION / merged.width, MAX_DIMENSION / merged.height)
+        new_w = max(1, int(merged.width * final_scale))
+        new_h = max(1, int(merged.height * final_scale))
+        print(f"\n⚠ 最终尺寸仍超限，二次缩放至 {new_w}×{new_h} ...")
+        merged = merged.resize((new_w, new_h), Image.LANCZOS)
+
     output_path = folder / output_name
-    merged.save(output_path, "PNG")
+    try:
+        merged.save(output_path, "PNG")
+    except Exception as save_err:
+        # 如果 PNG 保存失败，尝试降级为 JPEG 保存
+        print(f"\n⚠ PNG 保存失败 ({save_err})，尝试保存为 JPEG ...")
+        jpg_path = output_path.with_suffix(".jpg")
+        # JPEG 不支持透明通道，转为 RGB（白底）
+        if merged.mode == "RGBA":
+            background = Image.new("RGB", merged.size, (255, 255, 255))
+            background.paste(merged, mask=merged.split()[3])
+            merged = background
+        elif merged.mode != "RGB":
+            merged = merged.convert("RGB")
+        merged.save(jpg_path, "JPEG", quality=95, optimize=True)
+        output_path = jpg_path
     print(f"\n✅ 拼接完成！")
     print(f"   输出文件: {output_path}")
     print(f"   图片尺寸: {max_width} × {total_height}")
