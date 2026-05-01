@@ -1,6 +1,7 @@
 """
-图片竖向拼接工具
-按文件名自然排序，将文件夹下所有图片居中竖向拼接为一张 PNG。
+图片工具箱：竖向拼接 + 智能重命名
+- 拼接：按文件名自然排序，将文件夹下所有图片居中竖向拼接为一张 PNG。
+- 重命名：智能清理文件名，格式化数字后缀为两位数。
 用法：
     python image_merger.py                  → 终端交互菜单
     python image_merger.py <文件夹路径>      → 直接拼接（默认文件名）
@@ -10,6 +11,7 @@
 import os
 import re
 import sys
+from datetime import datetime
 from pathlib import Path
 from PIL import Image
 
@@ -128,6 +130,84 @@ def merge_images(folder_path: str, output_name: str = "merged_output.png") -> st
 
 
 # ============================================================
+#  智能重命名逻辑
+# ============================================================
+def rename_images(folder_path: str, preview: bool = True) -> tuple:
+    """
+    智能重命名文件夹内的图片文件。
+    - 清理文件名首尾空格
+    - 去除前缀末尾的空格、下划线、横杠
+    - 将数字后缀格式化为两位数 (如 img 5 -> img05)
+    - 无数字后缀时追加 01
+
+    参数:
+        folder_path : 文件夹路径
+        preview     : True=仅预览, False=正式重命名
+
+    返回:
+        (成功数, 跳过数)
+    """
+    folder = Path(folder_path).resolve()
+    if not folder.exists():
+        raise FileNotFoundError(f"文件夹不存在: {folder}")
+    if not folder.is_dir():
+        raise NotADirectoryError(f"路径不是文件夹: {folder}")
+
+    exts = {'.jpg', '.png', '.jpeg', '.gif', '.bmp', '.webp'}
+    files = [f for f in folder.iterdir() if f.is_file() and f.suffix.lower() in exts]
+
+    if not files:
+        print("📭 未发现支持的图片文件。")
+        return 0, 0
+
+    error_log = folder / "error.txt"
+    success_count = 0
+    skip_count = 0
+
+    print(f"\n共找到 {len(files)} 张图片，正在分析...\n")
+
+    for file in files:
+        name = file.stem.strip()
+        ext = file.suffix
+
+        try:
+            # 正则匹配：前缀 + 尾部数字
+            m = re.match(r'^(.*?)(\d+)$', name)
+            if m:
+                prefix = m.group(1).rstrip(' _-')
+                num = int(m.group(2))
+                new_name = f"{prefix}{num:02d}{ext}"
+            else:
+                clean_name = name.rstrip(' _-')
+                new_name = f"{clean_name}01{ext}"
+
+            new_path = folder / new_name
+
+            if file.resolve() != new_path.resolve():
+                if preview:
+                    print(f"  拟重命名: {file.name}  ->  {new_name}")
+                    success_count += 1
+                else:
+                    if not new_path.exists():
+                        file.rename(new_path)
+                        print(f"  ✅ 成功: {file.name}  ->  {new_name}")
+                        success_count += 1
+                    else:
+                        print(f"  ⏭ 跳过: {new_name} (目标已存在)")
+                        skip_count += 1
+        except Exception as e:
+            error_msg = f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 错误: 无法修改文件 {file.name} - {e}"
+            print(f"  ❌ {error_msg}")
+            try:
+                with open(error_log, 'a', encoding='utf-8') as f:
+                    f.write(error_msg + '\n')
+            except Exception:
+                pass
+
+    return success_count, skip_count
+
+
+# ============================================================
 #  终端交互菜单
 # ============================================================
 def interactive_menu():
@@ -137,7 +217,7 @@ def interactive_menu():
 
     while True:
         print("\n" + "=" * 50)
-        print("         📷 图片竖向拼接工具")
+        print("         📷 图片工具箱")
         print("=" * 50)
         print(f"  当前文件夹: {folder_path or '(未选择)'}")
         print(f"  输出文件名: {output_name}")
@@ -146,9 +226,10 @@ def interactive_menu():
         print("  2. 预览图片列表")
         print("  3. 设置输出文件名")
         print("  4. 🚀 开始拼接")
+        print("  5. 🔧 智能重命名")
         print("  0. 退出")
         print("-" * 50)
-        choice = input("请选择操作 [0-4]: ").strip()
+        choice = input("请选择操作 [0-5]: ").strip()
 
         if choice == "0":
             print("👋 再见！")
@@ -196,8 +277,38 @@ def interactive_menu():
                 merge_images(folder_path, output_name)
             except Exception as e:
                 print(f"\n❌ 拼接失败: {e}")
+        elif choice == "5":
+            if not folder_path:
+                print("❌ 请先选择文件夹！")
+                continue
+            print("\n--- 智能重命名 ---")
+            print("  [1] 预览模式 (仅查看结果，不修改文件)")
+            print("  [2] 正式重命名 (直接修改文件)")
+            print("  [0] 返回")
+            sub = input("请选择 [0-2]: ").strip()
+            if sub == "0":
+                continue
+            elif sub == "1":
+                print("\n--- 预览模式 ---")
+                try:
+                    rename_images(folder_path, preview=True)
+                except Exception as e:
+                    print(f"\n❌ 预览失败: {e}")
+            elif sub == "2":
+                confirm = input("\n⚠ 确认要正式重命名所有文件吗？(输入 y 确认): ").strip().lower()
+                if confirm == 'y':
+                    print("\n--- 正式重命名 ---")
+                    try:
+                        success, skip = rename_images(folder_path, preview=False)
+                        print(f"\n✅ 重命名完成！成功: {success}, 跳过: {skip}")
+                    except Exception as e:
+                        print(f"\n❌ 重命名失败: {e}")
+                else:
+                    print("已取消。")
+            else:
+                print("❌ 无效选项")
         else:
-            print("❌ 无效选项，请输入 0-4")
+            print("❌ 无效选项，请输入 0-5")
 
 
 # ============================================================

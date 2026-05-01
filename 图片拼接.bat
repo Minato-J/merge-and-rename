@@ -1,6 +1,6 @@
 @echo off
 chcp 65001 >nul
-title 图片竖向拼接工具
+title 图片工具箱
 
 :: 进入脚本所在目录
 cd /d "%~dp0"
